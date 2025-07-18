@@ -5,6 +5,7 @@ from pptx.oxml import parse_xml
 from io import BytesIO
 from copy import deepcopy
 import tempfile
+import time
 
 st.set_page_config(page_title="PowerPoint Content Transfer", layout="centered")
 st.title("📊 PowerPoint Content Transfer")
@@ -12,6 +13,9 @@ st.markdown("Upload a PowerPoint presentation containing the source content (Fil
 
 file_a = st.file_uploader("Upload Source Content PowerPoint (File A)", type=["pptx"])
 file_b = st.file_uploader("Upload Company Template PowerPoint (File B)", type=["pptx"])
+output_filename = st.text_input("Enter output filename (without .pptx):", "Processed_PowerPoint_File")
+
+start = st.button("🚀 Start Transfer")
 
 # === Helper Functions ===
 def recursively_ungroup_shapes(slide):
@@ -38,16 +42,16 @@ def ungroup_all_shapes(prs):
 
 def copy_shapes_exact(source_slide, target_slide):
     for shape in source_slide.shapes:
-        if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
-            image_stream = BytesIO(shape.image.blob)
-            target_slide.shapes.add_picture(
-                image_stream, shape.left, shape.top, shape.width, shape.height)
-        else:
-            try:
+        try:
+            if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
+                image_stream = BytesIO(shape.image.blob)
+                target_slide.shapes.add_picture(
+                    image_stream, shape.left, shape.top, shape.width, shape.height)
+            else:
                 new_el = deepcopy(shape.element)
                 target_slide.shapes._spTree.insert_element_before(new_el, 'p:extLst')
-            except:
-                continue
+        except:
+            continue
 
 def center_shapes_on_slide(slide, slide_width, slide_height):
     shapes = [shape for shape in slide.shapes 
@@ -105,36 +109,55 @@ def center_shapes_on_slide(slide, slide_width, slide_height):
     xfrm.find("a:off", namespaces={"a": xfrm.nsmap["a"]}).set("x", str(new_left))
     xfrm.find("a:off", namespaces={"a": xfrm.nsmap["a"]}).set("y", str(new_top))
 
-# === Main Processing ===
-if file_a and file_b:
+
+# === Main Process ===
+if start and file_a and file_b:
     try:
+        progress_text = "Processing..."
+        progress_bar = st.progress(0, text=progress_text)
+
         prs_content = Presentation(file_a)
         prs_template = Presentation(file_b)
+        progress_bar.progress(10, text="Ungrouping shapes...")
 
         ungroup_all_shapes(prs_content)
 
         template_layout = prs_template.slides[0].slide_layout
-        while len(prs_template.slides) > 0:
-            rId = prs_template.slides._sldIdLst[0].rId
-            prs_template.part.drop_rel(rId)
-            del prs_template.slides._sldIdLst[0]
 
-        for slide in prs_content.slides:
+        for i in range(1, len(prs_template.slides)):
+            rId = prs_template.slides._sldIdLst[1].rId
+            prs_template.part.drop_rel(rId)
+            del prs_template.slides._sldIdLst[1]
+
+        progress_bar.progress(30, text="Copying content into template...")
+
+        total_slides = len(prs_content.slides)
+        for i, slide in enumerate(prs_content.slides):
             new_slide = prs_template.slides.add_slide(template_layout)
             copy_shapes_exact(slide, new_slide)
+            progress_bar.progress(30 + int(40 * (i + 1) / total_slides), text=f"Processing slide {i + 1} of {total_slides}...")
+
+        # Delete preserved slide
+        rId = prs_template.slides._sldIdLst[0].rId
+        prs_template.part.drop_rel(rId)
+        del prs_template.slides._sldIdLst[0]
 
         slide_w = prs_template.slide_width
         slide_h = prs_template.slide_height
 
-        for slide in prs_template.slides:
+        for i, slide in enumerate(prs_template.slides):
             center_shapes_on_slide(slide, slide_w, slide_h)
 
-        # Save output
+        progress_bar.progress(95, text="Finalizing and saving...")
+
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pptx") as tmp_file:
+            filename = f"{output_filename.strip() or 'Processed_PowerPoint_File'}.pptx"
             prs_template.save(tmp_file.name)
             tmp_file.seek(0)
+            progress_bar.progress(100, text="✅ Done!")
+
             st.success("✅ Processing complete!")
-            st.download_button("📥 Download Processed PowerPoint file", tmp_file.read(), file_name="Processed_Presentation.pptx")
+            st.download_button("📥 Download Processed PowerPoint file", tmp_file.read(), file_name=filename)
 
     except Exception as e:
         st.error(f"❌ An error occurred: {e}")
